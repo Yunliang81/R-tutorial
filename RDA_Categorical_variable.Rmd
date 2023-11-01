@@ -1,0 +1,131 @@
+---
+title: "RDA based on categorical variables"
+author: "Yunliang Li"
+date: "2023-11-01"
+output: html_document
+---
+```{r setup, include=FALSE,warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# library required
+
+```{r}
+library(ggplot2)
+library(tidyr)
+library(vegan)
+library(ggrepel)# editing text for ggplot
+
+```
+
+# download data
+```{r}
+url='https://raw.githubusercontent.com/Yunliang81/R-tutorial/RDA/genus_abundance_merged.txt'
+download.file(url,destfile = "C:/Users/liyun/Desktop/Shotgun_Canola/reads_based/genus_abundance_merged.txt") # change the pathway to yours
+
+url='https://raw.githubusercontent.com/Yunliang81/R-tutorial/RDA/meta_data.txt'
+download.file(url,destfile = "C:/Users/liyun/Desktop/Shotgun_Canola/meta_data.txt") # change the pathway to yours
+
+url='https://raw.githubusercontent.com/Yunliang81/R-tutorial/RDA/factor_1.csv'
+download.file(url,destfile = "C:/Users/liyun/Desktop/Shotgun_Canola/factor_1.csv") # change the pathway to yours
+
+```
+
+
+# loading bacterial genus abundance data
+```{r}
+genus_abun <- read.table("C:/Users/liyun/Desktop/Shotgun_Canola/reads_based/genus_abundance_merged.txt", header = T, sep="\t",row.names = 1)
+
+#filter rare genus, prevalence=0.5
+min_prevalence <- 0.5
+genus_prevalence <- rowMeans(genus_abun > 0)
+filtered_genus_abun <- genus_abun[genus_prevalence >= min_prevalence, ]
+genus_abun[1:5,1:10]
+filtered_genus_abun[1:5,1:10]
+```
+
+# loading environmental data
+```{r}
+meta_data <- read.table("C:/Users/liyun/Desktop/Shotgun_Canola/meta_data.txt",header = T, sep="\t",row.names = 2)
+meta_data$year = as.factor(meta_data$year)
+meta_data_sort=meta_data[sort(rownames(meta_data)),] #sort samples
+identical(colnames(genus_abun),rownames(meta_data_sort)) # keep the consistence of samples' order
+meta_data_sort[1:10,1:5]
+```
+
+# RDA
+```{r}
+genus.hell <- decostand (t(filtered_genus_abun), 'hell') # hellinger transform community data, and the sample ID is in row
+genus.rda <- rda(genus.hell ~ site + year + line + week, data = meta_data_sort) # rda with your interested environmental variables
+fwd.sel <- ordiR2step(rda(genus.hell ~ 1, data = meta_data_sort),
+    scope = formula(genus.rda), direction = "forward", R2scope = TRUE,
+    pstep = 1000, trace = FALSE) # This step iteratively adds or removes predictors from a multivariate model, evaluates the model's performance at each step, and selects the best set of predictors.
+fwd.sel$call # showing which variables should be kept
+
+tbRDA<-rda(genus.hell~year + week +site,data=meta_data_sort) #run the model with screened variables
+
+tbRDA.anova = anova.cca(tbRDA,by="axis",parallel=getOption("mc.cores"))
+vif.cca(tbRDA) #VIF is a measure used to assess multicollinearity among the environmental variables in a multivariate analysis. If value > 5, this variable should be removed from model
+factor = meta_data_sort[,c("site",'year','week')]
+result=envfit(tbRDA,factor) #The purpose of envfit() is to assess the relationship between environmental variables and species composition as explained by the ordination axes. It quantifies how well each environmental variable fits the ordination space and provides statistical significance tests for these fits.
+
+#If you want to show the effect of the categorical variable in the plot with arrows, you have to transform these variables in binary format. factor_1.csv is the transformed files. 0 or 1 is based on whether this factor is linked to the sample
+factor1=read.csv("C:/Users/liyun/Desktop/Shotgun_Canola/factor_1.csv",header = T)
+factor1
+rda_model <- rda(genus.hell~Scott+Melfort+Saskatoon+Year_2016+Year_2017+Week3+Week6+Week9,data=factor1)
+
+# To better edit the RDA plot, we need to extract information from rda model
+#extract RDA1 RDA2 and their contribution
+aa=summary(rda_model)[[9]] # extract RDA and contribution info (list() format)
+RDA_Contri=data.frame(aa$importance) #transform list() to data frame
+contr=RDA_Contri[2,] # Extract contribution 
+contr_percent=paste0(round(contr*100, 1), "%") #transform contribution to percentage
+
+# Environmental factors' RDA coordinate
+SUM=summary(rda_model)
+factor=data.frame(SUM$biplot)
+
+# Samples' RDA coordinate
+meta=data.frame(SUM$sites)
+meta_com=cbind(meta,meta_data_sort$site,meta_data_sort$year,meta_data_sort$week) #add environmental factors
+colnames(meta_com)[7:9]=c('Site','Year','Group') #Rename column names
+meta_com$Site=gsub('L','Saskatoon',meta_com$Site) # using full name of experiment site
+meta_com$Site=gsub('^S$','Scott',meta_com$Site) # using full name of experiment site
+meta_com$Site=gsub('^M$','Melfort',meta_com$Site) # using full name of experiment site
+meta_com$Group=gsub('W','week',meta_com$Group) # change W to week
+
+
+ggplot()+
+  geom_vline(xintercept = c(0), color = "grey70", linetype = 2) +  
+  geom_hline(yintercept = c(0), color = "grey70", linetype = 2) + 
+  xlab(paste('RDA1 (',contr_percent[1],')',sep='')) +
+  ylab(paste('RDA2 (',contr_percent[2],')',sep='')) +
+  scale_x_continuous(sec.axis = dup_axis(labels=NULL, name=NULL)) +
+  scale_y_continuous(sec.axis = dup_axis(labels=NULL, name=NULL)) + 
+  geom_point(data=meta_com, 
+            aes(x=RDA1, y=RDA2, colour=Group, shape=Site), 
+            size=3) +
+  geom_segment(data=factor, 
+              aes(x=0, y=0, xend=RDA1, yend=RDA2), 
+              colour="black", size=0.2, arrow=arrow(),lwd=0.5)+
+  geom_text_repel(data=factor, 
+                    aes(x=RDA1-0.15, y=RDA2, label=rownames(factor)),
+                    colour="black")+
+  stat_ellipse(data=meta_com, aes(x=RDA1,y=RDA2,color=Year))
+
+
+
+#geom_vline() and geom_hline(): Add vertical and horizontal dashed gray lines at the x = 0 and y = 0 positions, respectively.
+#xlab() and ylab(): Sets the x-axis and y-axis labels, with the labels indicating the proportion of contribution from contr_percent.
+#scale_x_continuous() and scale_y_continuous(): Sets the secondary x and y axes with no labels or axis titles (sec.axis = dup_axis(labels = NULL, name = NULL)).
+#geom_point(): Adds points to the scatterplot. These points are colored and shaped based on the "Group" and "Site" variables from the meta_com dataset.
+#geom_segment(): Adds line segments that start at the origin (0, 0) and extend to the coordinates defined by "RDA1" and "RDA2" from the factor dataset. The lines are black with a size of 0.2 and have arrows at the end of each segment.
+#geom_text_repel(): Adds text labels to the scatterplot. The labels come from the row names of the factor dataset and are positioned slightly to the left of the corresponding points defined by "RDA1" and "RDA2."
+#stat_ellipse(): Adds ellipses to the plot. These ellipses represent the distribution of data points based on the "Year" variable from the meta_com dataset。
+
+
+ggsave("C:/Users/liyun/Desktop/Shotgun_Canola/genus_RDA_2.png",width = 5,height = 4) #save data
+
+```
+
+
